@@ -93,12 +93,18 @@ const routes = {
     const appId = q.get("appId");
     const days = Math.min(Number(q.get("days")) || 7, 90);
     const params = new URLSearchParams({ page_size: "50", ...intervalParams(days) });
+    if (q.get("errorType")) params.set("filter.issue.error_types", q.get("errorType"));
+    if (q.get("signal")) params.set("filter.issue.signals", q.get("signal"));
     const body = await gapi(`${CRASHLYTICS}/projects/${projectNumber(appId)}/apps/${appId}/reports/topIssues?${params}`);
     return (body.groups || []).map((g) => ({
       id: g.issue?.id,
       title: g.issue?.title,
       subtitle: g.issue?.subtitle,
       errorType: g.issue?.errorType,
+      state: g.issue?.state,
+      firstSeenVersion: g.issue?.firstSeenVersion,
+      lastSeenVersion: g.issue?.lastSeenVersion,
+      signals: g.issue?.signals || [],
       events: Number(g.metrics?.[0]?.eventsCount || 0),
       users: Number(g.metrics?.[0]?.impactedUsersCount || 0),
     }));

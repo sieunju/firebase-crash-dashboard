@@ -35,8 +35,14 @@
   .issue-item { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; padding: 12px 14px; cursor: pointer; display: flex; gap: 12px; align-items: baseline; }
   .issue-item:hover { border-color: var(--accent); }
   .issue-item.active { border-color: var(--accent); background: var(--mark); }
-  .issue-title { flex: 1; font-weight: 600; }
-  .issue-sub { color: var(--muted); font-size: 12px; }
+  .issue-main { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .issue-title { font-weight: 600; word-break: break-all; }
+  .issue-sub { color: var(--muted); font-size: 12px; word-break: break-all; }
+  .badges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+  .badge { font-size: 11px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); }
+  .badge.type-FATAL { background: var(--err); border-color: var(--err); color: #fff; }
+  .badge.type-ANR { border-color: #d97706; color: #d97706; }
+  .badge.signal { border-color: var(--accent); color: var(--accent); }
   .issue-stat { font-size: 12px; color: var(--accent); white-space: nowrap; }
   .breadcrumb { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 10px; }
   .breadcrumb summary { padding: 10px 14px; cursor: pointer; display: flex; gap: 14px; flex-wrap: wrap; align-items: baseline; }
@@ -60,7 +66,7 @@
 <main id="main">
   <section class="controls">
     <label>프로젝트 <select id="project"></select></label>
-    <label>OS <select id="os"><option value="ios">iOS</option><option value="android">Android</option></select></label>
+    <label>OS <select id="os"><option value="android">Android</option><option value="ios">iOS</option></select></label>
     <label>앱 <select id="app"></select></label>
     <label>기간
       <select id="days">
@@ -68,6 +74,23 @@
         <option value="7" selected>최근 7일</option>
         <option value="30">최근 30일</option>
         <option value="90">최근 90일</option>
+      </select>
+    </label>
+    <label>오류 타입
+      <select id="errorType">
+        <option value="">전체</option>
+        <option value="FATAL">FATAL (강제 종료)</option>
+        <option value="NON_FATAL">NON_FATAL</option>
+        <option value="ANR">ANR</option>
+      </select>
+    </label>
+    <label>시그널
+      <select id="signal">
+        <option value="">전체</option>
+        <option value="SIGNAL_FRESH">신규</option>
+        <option value="SIGNAL_REGRESSED">ReOpen</option>
+        <option value="SIGNAL_EARLY">시작 직후</option>
+        <option value="SIGNAL_REPETITIVE">반복</option>
       </select>
     </label>
     <div class="row wide">
@@ -83,6 +106,7 @@
   </div>
 
   <div id="detailSection" class="hidden">
+    <button id="backBtn">← 이슈 목록</button>
     <h3 style="margin: 16px 0 8px;" id="detailTitle"></h3>
     <div id="breadcrumbList"></div>
   </div>
@@ -90,8 +114,9 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-let issues = [];
+let issues = null; // null = 아직 조회 전
 let currentEvents = [];
+const SIGNAL_LABELS = { SIGNAL_FRESH: "신규", SIGNAL_REGRESSED: "ReOpen", SIGNAL_EARLY: "시작 직후", SIGNAL_REPETITIVE: "반복" };
 
 async function api(path, params = {}) {
   const qs = new URLSearchParams(params).toString();
@@ -146,7 +171,9 @@ async function loadIssues() {
   if (!$("app").value) return status("앱을 선택하세요.", true);
   status("이슈 목록 불러오는 중…");
   try {
-    issues = await api("/api/issues", { appId: $("app").value, days: $("days").value });
+    issues = await api("/api/issues", {
+      appId: $("app").value, days: $("days").value, errorType: $("errorType").value, signal: $("signal").value,
+    });
     renderIssues();
     status(`이슈 ${issues.length}개 — 이슈를 클릭하면 기기 로그를 볼 수 있습니다.`);
   } catch (e) {
@@ -163,9 +190,19 @@ function renderIssues() {
   issues.forEach((issue) => {
     const li = document.createElement("li");
     li.className = "issue-item";
+    const versions = issue.firstSeenVersion ? `${issue.firstSeenVersion} → ${issue.lastSeenVersion || "?"}` : "";
+    const badges = [
+      `<span class="badge type-${issue.errorType}">${issue.errorType}</span>`,
+      issue.state ? `<span class="badge">${issue.state}</span>` : "",
+      versions ? `<span class="badge">${escapeHtml(versions)}</span>` : "",
+      ...issue.signals.map((s) => `<span class="badge signal" title="${escapeHtml(s.description || "")}">${SIGNAL_LABELS[s.signal] || s.signal}</span>`),
+    ].join("");
     li.innerHTML = `
-      <span class="issue-title">[${issue.errorType}] ${issue.title}</span>
-      <span class="issue-sub">${issue.subtitle || ""}</span>
+      <div class="issue-main">
+        <span class="issue-title">${escapeHtml(issue.title || "")}</span>
+        <span class="issue-sub">${escapeHtml(issue.subtitle || "")}</span>
+        <div class="badges">${badges}</div>
+      </div>
       <span class="issue-stat">${issue.events.toLocaleString()}건 · ${issue.users.toLocaleString()}명</span>
     `;
     li.onclick = () => loadIssue(issue.id, li);
@@ -177,11 +214,14 @@ function renderIssues() {
 async function loadIssue(issueId, el) {
   document.querySelectorAll(".issue-item").forEach((i) => i.classList.remove("active"));
   if (el) el.classList.add("active");
+  window.scrollTo(0, 0);
   status("기기 로그 불러오는 중… (최대 100개)");
   try {
     const data = await api("/api/issue", { appId: $("app").value, issueId, days: $("days").value });
     currentEvents = data.events;
     renderDetail(data.issue, data.events);
+    $("issueSection").classList.add("hidden");
+    window.scrollTo(0, 0);
     status(`이슈 '${data.issue.title}' — 기기 ${data.events.length}개 로드됨`);
   } catch (e) {
     status(e.message, true);
@@ -243,8 +283,14 @@ $("project").onchange = () => {
   loadApps();
 };
 $("os").onchange = loadApps;
-$("days").onchange = () => issues.length && loadIssues();
+$("days").onchange = $("errorType").onchange = $("signal").onchange = () => issues && loadIssues();
 $("loadIssues").onclick = loadIssues;
+$("backBtn").onclick = () => {
+  $("detailSection").classList.add("hidden");
+  $("issueSection").classList.remove("hidden");
+  status(`이슈 ${issues.length}개 — 이슈를 클릭하면 기기 로그를 볼 수 있습니다.`);
+  document.querySelector(".issue-item.active")?.scrollIntoView({ block: "center" });
+};
 
 // 시작
 api("/api/me").then((me) => ($("me").textContent = me.email || "")).catch(() => {});
