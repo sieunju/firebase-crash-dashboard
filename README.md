@@ -1,4 +1,4 @@
-# imbank-crash
+# firebase-crash-dashboard
 
 Crashlytics 이슈 뷰어 로컬 서버. Firebase 프로젝트 → 앱(iOS/Android)을 골라 Crashlytics 이슈 목록과 이슈별 기기 로그(breadcrumb)를 본다.
 
