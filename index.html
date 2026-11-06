@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crashlytics 이슈 뷰어</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --text: #1d2330; --muted: #6b7280; --line: #e3e6eb;
+    --accent: #2563eb; --mark: #fff1a8; --err: #b91c1c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --panel: #1a1e26; --text: #e5e7eb; --muted: #9aa3b2; --line: #2b313c;
+      --accent: #60a5fa; --mark: #5c4d0c; --err: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif; }
+  header { display: flex; justify-content: space-between; align-items: center; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { margin: 0; font-size: 16px; }
+  #me { color: var(--muted); font-size: 13px; }
+  main { padding: 16px 20px; max-width: 1400px; margin: 0 auto; }
+  .controls { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+  .controls label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+  .controls .wide { grid-column: span 2; }
+  select, button { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #status { margin: 12px 0; color: var(--muted); min-height: 20px; }
+  #status.error { color: var(--err); }
+  .issue-list { list-style: none; padding: 0; margin: 0; }
+  .issue-item { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; padding: 12px 14px; cursor: pointer; display: flex; gap: 12px; align-items: baseline; }
+  .issue-item:hover { border-color: var(--accent); }
+  .issue-item.active { border-color: var(--accent); background: var(--mark); }
+  .issue-title { flex: 1; font-weight: 600; }
+  .issue-sub { color: var(--muted); font-size: 12px; }
+  .issue-stat { font-size: 12px; color: var(--accent); white-space: nowrap; }
+  .breadcrumb { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 10px; }
+  .breadcrumb summary { padding: 10px 14px; cursor: pointer; display: flex; gap: 14px; flex-wrap: wrap; align-items: baseline; }
+  .meta { color: var(--muted); font-size: 12px; }
+  .count { margin-left: auto; font-size: 12px; color: var(--accent); }
+  .logs { margin: 0; padding: 8px 14px 12px; border-top: 1px solid var(--line); font: 12px/1.6 ui-monospace, Menlo, monospace; overflow-x: auto; }
+  .logs div { white-space: pre-wrap; word-break: break-all; }
+  .logs .t { color: var(--muted); margin-right: 8px; }
+  mark { background: var(--mark); color: inherit; border-radius: 2px; }
+  .hidden { display: none !important; }
+  @media (max-width: 640px) { .controls .wide { grid-column: span 1; } main, header { padding-left: 16px; padding-right: 16px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Crashlytics 이슈 뷰어</h1>
+  <span id="me"></span>
+</header>
+
+<!-- 메인 화면 -->
+<main id="main">
+  <section class="controls">
+    <label>프로젝트 <select id="project"></select></label>
+    <label>OS <select id="os"><option value="ios">iOS</option><option value="android">Android</option></select></label>
+    <label>앱 <select id="app"></select></label>
+    <label>기간
+      <select id="days">
+        <option value="1">최근 1일</option>
+        <option value="7" selected>최근 7일</option>
+        <option value="30">최근 30일</option>
+        <option value="90">최근 90일</option>
+      </select>
+    </label>
+    <div class="row wide">
+      <button class="primary" id="loadIssues">이슈 목록 가져오기</button>
+    </div>
+  </section>
+
+  <div id="status"></div>
+
+  <div id="issueSection" class="hidden">
+    <h3 style="margin: 16px 0 8px;">이슈 목록</h3>
+    <ul class="issue-list" id="issueList"></ul>
+  </div>
+
+  <div id="detailSection" class="hidden">
+    <h3 style="margin: 16px 0 8px;" id="detailTitle"></h3>
+    <div id="breadcrumbList"></div>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let issues = [];
+let currentEvents = [];
+
+async function api(path, params = {}) {
+  const qs = new URLSearchParams(params).toString();
+  const res = await fetch(`${path}${qs ? "?" + qs : ""}`);
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.error || res.statusText);
+  return body;
+}
+
+function status(text, isError = false) {
+  $("status").textContent = text;
+  $("status").className = isError ? "error" : "";
+}
+
+function fill(select, items, value, label) {
+  select.innerHTML = "";
+  for (const it of items) select.add(new Option(label(it), value(it)));
+}
+
+// 프로젝트 목록
+async function loadProjects() {
+  status("프로젝트 불러오는 중…");
+  try {
+    const projects = await api("/api/projects");
+    fill($("project"), projects, (p) => p.projectId, (p) => `${p.displayName} (${p.projectId})`);
+    try {
+      const last = localStorage.getItem("project");
+      if (projects.some((p) => p.projectId === last)) $("project").value = last;
+    } catch {}
+    await loadApps();
+  } catch (e) {
+    status(e.message, true);
+  }
+}
+
+// 앱 목록 (OS별)
+async function loadApps() {
+  status("앱 불러오는 중…");
+  try {
+    const apps = await api("/api/apps", { project: $("project").value, platform: $("os").value });
+    fill($("app"), apps, (a) => a.appId, (a) => a.name);
+    $("loadIssues").disabled = !apps.length;
+    if (!apps.length) status("앱이 없습니다.");
+    else status(`앱 ${apps.length}개`);
+  } catch (e) {
+    status(e.message, true);
+  }
+}
+
+// 이슈 목록
+async function loadIssues() {
+  if (!$("app").value) return status("앱을 선택하세요.", true);
+  status("이슈 목록 불러오는 중…");
+  try {
+    issues = await api("/api/issues", { appId: $("app").value, days: $("days").value });
+    renderIssues();
+    status(`이슈 ${issues.length}개 — 이슈를 클릭하면 기기 로그를 볼 수 있습니다.`);
+  } catch (e) {
+    status(e.message, true);
+  }
+}
+
+function renderIssues() {
+  $("issueSection").classList.remove("hidden");
+  $("detailSection").classList.add("hidden");
+  currentEvents = [];
+  const list = $("issueList");
+  list.innerHTML = "";
+  issues.forEach((issue) => {
+    const li = document.createElement("li");
+    li.className = "issue-item";
+    li.innerHTML = `
+      <span class="issue-title">[${issue.errorType}] ${issue.title}</span>
+      <span class="issue-sub">${issue.subtitle || ""}</span>
+      <span class="issue-stat">${issue.events.toLocaleString()}건 · ${issue.users.toLocaleString()}명</span>
+    `;
+    li.onclick = () => loadIssue(issue.id, li);
+    list.appendChild(li);
+  });
+}
+
+// 이슈 상세 (breadcrumb 로그)
+async function loadIssue(issueId, el) {
+  document.querySelectorAll(".issue-item").forEach((i) => i.classList.remove("active"));
+  if (el) el.classList.add("active");
+  status("기기 로그 불러오는 중… (최대 100개)");
+  try {
+    const data = await api("/api/issue", { appId: $("app").value, issueId, days: $("days").value });
+    currentEvents = data.events;
+    renderDetail(data.issue, data.events);
+    status(`이슈 '${data.issue.title}' — 기기 ${data.events.length}개 로드됨`);
+  } catch (e) {
+    status(e.message, true);
+  }
+}
+
+function fmtTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.toLocaleString("sv-SE");
+}
+
+function fmtClock(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.toLocaleTimeString("sv-SE") + "." + String(d.getMilliseconds()).padStart(3, "0");
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+}
+
+function renderDetail(issue, events) {
+  $("detailSection").classList.remove("hidden");
+  $("detailTitle").textContent = `[${issue.errorType}] ${issue.title} — ${issue.subtitle || ""} (${events.length}개 기기)`;
+
+  const container = $("breadcrumbList");
+  container.innerHTML = "";
+
+  if (!events.length) {
+    container.innerHTML = '<div class="meta">로그가 없습니다.</div>';
+    return;
+  }
+
+  events.forEach((e) => {
+    const details = document.createElement("details");
+    details.className = "breadcrumb";
+    const meta = [e.version, e.device, e.os].filter(Boolean).join(" · ");
+    const logLines = (e.logs || []).map((l) => {
+      const msg = escapeHtml(l.message);
+      return `<div><span class="t">${fmtClock(l.time)}</span>${msg}</div>`;
+    }).join("");
+
+    details.innerHTML = `
+      <summary>
+        <b>${fmtTime(e.eventTime)}</b>
+        <span class="meta">${escapeHtml(meta)}</span>
+        <span class="count">로그 ${e.logs?.length || 0}줄</span>
+      </summary>
+      <div class="logs">${logLines || '<span class="meta">로그 없음</span>'}</div>
+    `;
+    container.appendChild(details);
+  });
+}
+
+// 이벤트 리스너
+$("project").onchange = () => {
+  try { localStorage.setItem("project", $("project").value); } catch {}
+  loadApps();
+};
+$("os").onchange = loadApps;
+$("days").onchange = () => issues.length && loadIssues();
+$("loadIssues").onclick = loadIssues;
+
+// 시작
+api("/api/me").then((me) => ($("me").textContent = me.email || "")).catch(() => {});
+loadProjects();
+</script>
+</body>
+</html>
