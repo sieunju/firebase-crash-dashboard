@@ -53,10 +53,14 @@
   .logs .t { color: var(--muted); margin-right: 8px; }
   mark { background: var(--mark); color: inherit; border-radius: 2px; }
   .hidden { display: none !important; }
+  #loadingBar { position: fixed; top: 0; left: 0; right: 0; height: 3px; overflow: hidden; z-index: 10; }
+  #loadingBar::before { content: ""; position: absolute; top: 0; bottom: 0; width: 30%; background: var(--accent); animation: loading 1s ease-in-out infinite; }
+  @keyframes loading { from { left: -30%; } to { left: 100%; } }
   @media (max-width: 640px) { .controls .wide { grid-column: span 1; } main, header { padding-left: 16px; padding-right: 16px; } }
 </style>
 </head>
 <body>
+<div id="loadingBar" class="hidden"></div>
 <header>
   <h1>Crashlytics 이슈 뷰어</h1>
   <span id="me"></span>
@@ -216,6 +220,7 @@ async function loadIssue(issueId, el) {
   if (el) el.classList.add("active");
   window.scrollTo(0, 0);
   status("기기 로그 불러오는 중… (최대 100개)");
+  $("loadingBar").classList.remove("hidden");
   try {
     const data = await api("/api/issue", { appId: $("app").value, issueId, days: $("days").value });
     currentEvents = data.events;
@@ -225,6 +230,8 @@ async function loadIssue(issueId, el) {
     status(`이슈 '${data.issue.title}' — 기기 ${data.events.length}개 로드됨`);
   } catch (e) {
     status(e.message, true);
+  } finally {
+    $("loadingBar").classList.add("hidden");
   }
 }
 
